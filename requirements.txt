@@ -1,0 +1,15 @@
+streamlit
+openai-whisper
+spacy
+ffmpeg-python
+numpy
+pandas
+torch
+transformers
+pydub
+pyaudio
+scipy
+
+
+
+
