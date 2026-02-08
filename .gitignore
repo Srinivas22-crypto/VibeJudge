@@ -47,3 +47,22 @@ data/uploads/
 data/transcripts/
 data/results/
 ffmpeg/
+
+# Data & outputs
+data/
+data/uploads/
+data/transcripts/
+data/results/
+
+# ML / audio files
+models/
+*.wav
+*.mp3
+*.pt
+*.pkl
+*.h5
+*.csv
+
+# Environment
+.env
+__pycache__/
