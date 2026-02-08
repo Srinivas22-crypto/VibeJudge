@@ -12,7 +12,7 @@ sys.path.append(str(project_root))
 
 # Import components and models
 from config.settings import APP_TITLE, APP_ICON, PAGE_LAYOUT, UPLOAD_DIR
-from app.components.uploader import render_upload_sectionstreamlit run app/main.py
+from app.components.uploader import render_upload_sectionstreamlit run app/main.py 
 from models.transcriber import get_transcriber
 from models.analyzer import get_analyzer
 from database.db_manager import get_db
