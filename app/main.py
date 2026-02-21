@@ -1,187 +1,281 @@
 import streamlit as st
 import time
-import os
 import json
 from pathlib import Path
-
+import sys
+from datetime import datetime
 
 # Add project root to path
-import sys
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-# Import components and models
-from config.settings import APP_TITLE, APP_ICON, PAGE_LAYOUT, UPLOAD_DIR
-from app.components.uploader import render_upload_sectionstreamlit run app/main.py 
+# Imports
+from config.settings import APP_TITLE, APP_ICON, PAGE_LAYOUT, RESULTS_DIR
+from app.components.uploader import render_upload_section
 from models.transcriber import get_transcriber
 from models.analyzer import get_analyzer
+from models.sentiment_analyzer import SentimentAnalyzer
+from models.tone_detector import ToneDetector
 from database.db_manager import get_db
+from utils.visualizations import (
+    create_sentiment_timeline,
+    create_sentiment_distribution_pie,
+    create_tone_heatmap,
+    create_combined_dashboard
+)
+from utils.pdf_generator import generate_pdf_report
 
-# Page Config
+
+# Page config
 st.set_page_config(
     page_title=APP_TITLE,
     page_icon=APP_ICON,
     layout=PAGE_LAYOUT
 )
 
-# Custom CSS
-st.markdown("""
-<style>
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-    }
-    .bias-high { border-left: 5px solid #ff4b4b; }
-    .bias-moderate { border-left: 5px solid #ffa500; }
-    .bias-low { border-left: 5px solid #00c853; }
-</style>
-""", unsafe_allow_html=True)
 
 def main():
     st.title(f"{APP_ICON} {APP_TITLE}")
     st.markdown("Upload a podcast episode to detect bias, sentiment, and tone.")
-    
-    # --- Sidebar ---
+
+    # ================= SIDEBAR =================
     with st.sidebar:
         st.header("About")
         st.markdown("""
-        **VibeJudge** analyzes audio content using AI to provide insights on:
-        - 🎭 **Sentiment**: Positive/Negative balance
-        - ⚖️ **Bias**: Loaded language and political leaning
-        - 🗣️ **Tone**: Aggression, excitement, or calm
-        """)
-        
-        st.divider()
+**VibeJudge analyzes audio using AI**
+- 🎭 Sentiment
+- ⚖️ Bias
+- 🗣️ Emotional Tone
+""")
+
         db = get_db()
         stats = db.get_statistics()
-        st.subheader("Global Stats")
         st.metric("Podcasts Analyzed", stats['total_podcasts'])
         st.metric("Avg Bias Score", stats['avg_bias_score'])
 
-    # --- Main Content ---
-    
-    # 1. Upload Section
+    # ================= UPLOAD =================
     if 'current_podcast' not in st.session_state:
         upload_result = render_upload_section()
         if upload_result:
             uploaded_file, podcast_id, file_path, duration = upload_result
-            
-            # Store in session
+
             st.session_state['current_podcast'] = {
                 'id': podcast_id,
                 'path': file_path,
                 'filename': uploaded_file.name,
                 'duration': duration
             }
-            
-            # Save to DB
+
             db.insert_podcast(
-                podcast_id, uploaded_file.name, uploaded_file.name, 
-                uploaded_file.size, file_path, duration
+                podcast_id,
+                uploaded_file.name,
+                uploaded_file.name,
+                uploaded_file.size,
+                file_path,
+                duration
             )
             st.rerun()
 
-    # 2. Analysis Section
+    # ================= ANALYSIS =================
     else:
         podcast = st.session_state['current_podcast']
         st.info(f"Analyzing: **{podcast['filename']}**")
-        
-        # Progress Bar
+
         progress_bar = st.progress(0)
-        status_text = st.empty()
-        
+        status = st.empty()
+
         try:
-            # Step 1: Transcription
-            status_text.text("🎙️ Transcribing audio (this may take a while)...")
+            # -----------------------------
+            # STEP 1 — TRANSCRIBE
+            # -----------------------------
+            status.text("🎙️ Transcribing audio...")
             progress_bar.progress(10)
-            
+
             transcriber = get_transcriber()
-            
-            # Preprocess
-            processed_path = transcriber.preprocess_audio(podcast['path'])
-            
-            # Transcribe
-            transcript_result = transcriber.transcribe(processed_path)
-            progress_bar.progress(50)
-            
-            # Save Transcript
-            transcript_path = Path(podcast['path']).with_suffix('.json')
+            processed = transcriber.preprocess_audio(podcast['path'])
+            transcript_result = transcriber.transcribe(processed)
+
+            transcript_path = Path(podcast['path']).with_suffix(".json")
             transcriber.save_transcript(transcript_result, str(transcript_path))
-            
-            full_text = transcript_result['text']
-            
-            # Step 2: Analysis
-            status_text.text("🧠 Analyzing content for sentiment and bias...")
+            full_text = transcript_result["text"]
+
+            progress_bar.progress(40)
+
+            # -----------------------------
+            # STEP 2 — SENTIMENT
+            # -----------------------------
+            sentiment_model = SentimentAnalyzer()
+            sentiment_results = sentiment_model.analyze_text(
+                full_text,
+                transcript_result.get("segments")
+            )
+
+            sentiment_path = Path(RESULTS_DIR) / f"{podcast['id']}_sentiment.json"
+            sentiment_model.save_results(sentiment_results, str(sentiment_path))
             progress_bar.progress(60)
-            
+
+            # -----------------------------
+            # STEP 3 — TONE
+            # -----------------------------
+            tone_detector = ToneDetector()
+            tone_results = tone_detector.analyze_text(
+                full_text,
+                transcript_result.get("segments")
+            )
+
+            tone_path = Path(RESULTS_DIR) / f"{podcast['id']}_tone.json"
+            tone_detector.save_results(tone_results, str(tone_path))
+            progress_bar.progress(75)
+
+            # -----------------------------
+            # STEP 4 — BIAS
+            # -----------------------------
             analyzer = get_analyzer()
-            
-            # Run Analyses
-            sentiment = analyzer.analyze_sentiment(full_text)
             bias = analyzer.analyze_bias(full_text)
-            tone = analyzer.analyze_tone(full_text)
-            
             progress_bar.progress(90)
-            
-            # Step 3: Save Results
-            status_text.text("💾 Saving results...")
-            
-            # Processing time (mock)
-            processing_time = 0 
-            
-            # Save to DB
+
+            # -----------------------------
+            # STEP 5 — SAVE DB
+            # -----------------------------
             analysis_id = db.insert_analysis(
-                podcast['id'], sentiment, tone, bias, 
-                processing_time=120.0,  # Placeholder
+                podcast['id'],
+                sentiment_results,
+                tone_results,
+                bias,
+                processing_time=120.0,
                 result_json_path=str(transcript_path)
             )
-            
-            # Save Flags
+
             if bias['flags']:
                 db.insert_bias_flags(analysis_id, bias['flags'])
-            
-            db.update_podcast_status(podcast['id'], 'completed')
-            
+
             progress_bar.progress(100)
-            status_text.success("Analysis Complete!")
-            time.sleep(1)
-            
-            # --- Results Dashboard ---
-            st.divider()
-            
-            # Summary Metrics
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("Overall Sentiment", 
-                         f"{sentiment['overall_score']}", 
-                         delta=f"{sentiment['positive_pct']}% Positive")
-            with c2:
-                level_color = "🟢" if bias['level'] == "Low" else "🟠" if bias['level'] == "Moderate" else "🔴"
-                st.metric("Bias Level", f"{level_color} {bias['level']}", f"{bias['score']} Score")
-            with c3:
-                st.metric("Dominant Tone", tone['dominant_tone'])
-            
-            # Tabs for details
-            tab1, tab2, tab3 = st.tabs(["📝 Transcript", "🚩 Bias Flags", "📊 Data"])
-            
-            with tab1:
-                st.text_area("Full Transcript", full_text, height=300)
-            
-            with tab2:
-                if bias['flags']:
-                    st.warning(f"Found {len(bias['flags'])} potential bias indicators:")
-                    for flag in bias['flags']:
-                        st.markdown(f"- **{flag['phrase']}** ({flag['category']})")
-                else:
-                    st.success("No significant bias flags detected.")
-                    
-            with tab3:
-                st.json(sentiment)
-                st.json(tone)
-            
-            # Button to reset
+            status.success("Analysis Complete!")
+
+            # ==================================================
+            # STEP 6 — VISUAL DASHBOARD
+            # ==================================================
+            st.write("---")
+            st.write("## 📊 Analysis Dashboard")
+
+            try:
+                dashboard_fig = create_combined_dashboard(
+                    sentiment_results,
+                    tone_results
+                )
+                st.plotly_chart(dashboard_fig, use_container_width=True)
+
+            except Exception as e:
+                st.warning(f"Combined dashboard failed: {e}")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    if sentiment_results.get("timeline"):
+                        st.plotly_chart(
+                            create_sentiment_timeline(sentiment_results["timeline"]),
+                            use_container_width=True
+                        )
+
+                with col2:
+                    st.plotly_chart(
+                        create_sentiment_distribution_pie(sentiment_results),
+                        use_container_width=True
+                    )
+
+                if tone_results.get("timeline"):
+                    st.plotly_chart(
+                        create_tone_heatmap(tone_results["timeline"]),
+                        use_container_width=True
+                    )
+
+            # ==================================================
+            # TRANSCRIPT HIGHLIGHTS
+            # ==================================================
+            st.write("---")
+            st.write("## 📝 Full Transcript with Sentiment Highlights")
+
+            if sentiment_results.get("sentences"):
+                html = "<div style='line-height:2;'>"
+                for s in sentiment_results["sentences"][:50]:
+                    score = abs(s["score"])
+                    if s["label"] == "positive":
+                        color = f"rgba(46,204,113,{score*0.3})"
+                    elif s["label"] == "negative":
+                        color = f"rgba(231,76,60,{score*0.3})"
+                    else:
+                        color = "transparent"
+
+                    html += f"<span style='background:{color};padding:2px 4px;border-radius:3px;'>{s['text']}</span> "
+
+                html += "</div>"
+                st.markdown(html, unsafe_allow_html=True)
+
+            # ==================================================
+            # STEP 7 — EXPORT REPORT
+            # ==================================================
+            st.write("---")
+            st.write("## 📥 Export Report")
+
+            export_col1, export_col2 = st.columns(2)
+
+            # JSON EXPORT
+            with export_col1:
+                json_report = {
+                    "podcast_id": podcast['id'],
+                    "filename": podcast['filename'],
+                    "transcript": transcript_result,
+                    "sentiment": sentiment_results,
+                    "tone": tone_results,
+                    "analysis_date": datetime.now().isoformat()
+                }
+
+                st.download_button(
+                    "📄 Download JSON Report",
+                    json.dumps(json_report, indent=2),
+                    file_name=f"{podcast['id']}_report.json",
+                    mime="application/json"
+                )
+
+            # PDF EXPORT
+            with export_col2:
+                if st.button("📑 Generate PDF Report"):
+                    with st.spinner("Generating PDF..."):
+                        try:
+                            pdf_path = Path(RESULTS_DIR) / f"{podcast['id']}_report.pdf"
+
+                            generate_pdf_report(
+                                podcast_id=podcast['id'],
+                                filename=podcast['filename'],
+                                transcript_data=transcript_result,
+                                sentiment_results=sentiment_results,
+                                tone_results=tone_results,
+                                output_path=str(pdf_path)
+                            )
+
+                            with open(pdf_path, "rb") as f:
+                                st.download_button(
+                                    "📥 Download PDF",
+                                    f,
+                                    file_name=f"{podcast['id']}_report.pdf",
+                                    mime="application/pdf"
+                                )
+
+                            st.success("✓ PDF generated!")
+
+                        except Exception as e:
+                            st.error(f"PDF generation failed: {e}")
+
+            # Final DB update
+            db.update_podcast_status(
+                podcast_id=podcast['id'],
+                status="completed",
+                transcript_path=str(transcript_path)
+            )
+
+            st.success("🎉 Analysis Complete!")
+            st.balloons()
+
             if st.button("Analyze Another File"):
                 del st.session_state['current_podcast']
                 st.rerun()
@@ -189,9 +283,7 @@ def main():
         except Exception as e:
             st.error(f"Analysis Failed: {e}")
             db.update_podcast_status(podcast['id'], 'failed', str(e))
-            if st.button("Try Again"):
-                del st.session_state['current_podcast']
-                st.rerun()
+
 
 if __name__ == "__main__":
     main()
