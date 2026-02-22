@@ -8,8 +8,17 @@ Week 3: Full Pipeline Integration
 import json
 import uuid
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
+
+# ─────────────────────────────────────────────────────────
+# Path Resolution Fix (Streamlit)
+# ─────────────────────────────────────────────────────────
+# Add project root to sys.path to allow imports from sibling packages
+root_path = Path(__file__).resolve().parent.parent
+if str(root_path) not in sys.path:
+    sys.path.insert(0, str(root_path))
 
 import streamlit as st
 import plotly.graph_objects as go
@@ -139,7 +148,7 @@ def validate_uploaded_file(uploaded_file) -> tuple:
 # ─────────────────────────────────────────────────────────
 # Analysis Pipeline
 # ─────────────────────────────────────────────────────────
-def run_full_analysis(uploaded_file, options: Dict) -> Dict:
+def run_full_analysis(uploaded_file, options: dict) -> dict:
     """
     Run complete analysis pipeline.
 
@@ -288,7 +297,7 @@ def run_full_analysis(uploaded_file, options: Dict) -> Dict:
 # ─────────────────────────────────────────────────────────
 # Results Rendering
 # ─────────────────────────────────────────────────────────
-def render_results(results: Dict):
+def render_results(results: dict):
     """Render all analysis results in tabs"""
 
     transcript = results["transcript"]

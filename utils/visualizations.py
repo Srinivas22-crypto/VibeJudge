@@ -5,7 +5,7 @@ import numpy as np
 from typing import Dict, List
 
 
-def create_sentiment_timeline(timeline_data: List[Dict]) -> go.Figure:
+def create_sentiment_timeline(timeline_data: list[dict]) -> go.Figure:
     """
     Create sentiment timeline chart
     
@@ -64,7 +64,7 @@ def create_sentiment_timeline(timeline_data: List[Dict]) -> go.Figure:
     return fig
 
 
-def create_sentiment_distribution_pie(sentiment_results: Dict) -> go.Figure:
+def create_sentiment_distribution_pie(sentiment_results: dict) -> go.Figure:
     """
     Create pie chart for sentiment distribution
     
@@ -100,7 +100,7 @@ def create_sentiment_distribution_pie(sentiment_results: Dict) -> go.Figure:
     return fig
 
 
-def create_tone_heatmap(tone_timeline: List[Dict]) -> go.Figure:
+def create_tone_heatmap(tone_timeline: list[dict]) -> go.Figure:
     """
     Create heatmap showing tone changes over time
     
@@ -162,8 +162,8 @@ def create_tone_heatmap(tone_timeline: List[Dict]) -> go.Figure:
 
 
 def create_combined_dashboard(
-    sentiment_results: Dict,
-    tone_results: Dict
+    sentiment_results: dict,
+    tone_results: dict
 ) -> go.Figure:
     """
     Create comprehensive dashboard with multiple subplots
@@ -298,7 +298,7 @@ def _empty_figure(message: str) -> go.Figure:
     )
     return fig
     
-def create_bias_timeline(bias_timeline: List[Dict]) -> go.Figure:
+def create_bias_timeline(bias_timeline: list[dict]) -> go.Figure:
     """
     Bar chart showing bias flag count per 30-second bin.
 
@@ -341,7 +341,7 @@ def create_bias_timeline(bias_timeline: List[Dict]) -> go.Figure:
     return fig
 
 
-def create_bias_category_chart(category_dist: Dict) -> go.Figure:
+def create_bias_category_chart(category_dist: dict) -> go.Figure:
     """
     Horizontal bar chart of bias categories.
 
@@ -390,7 +390,7 @@ def create_bias_category_chart(category_dist: Dict) -> go.Figure:
     return fig
 
 
-def create_emotionprint_timeline(ep_results: Dict) -> go.Figure:
+def create_emotionprint_timeline(ep_results: dict) -> go.Figure:
     """
     Scatter/line plot of divergence scores over podcast time.
 
@@ -462,7 +462,7 @@ def create_emotionprint_timeline(ep_results: Dict) -> go.Figure:
     return fig
 
 
-def create_emotionprint_summary_chart(ep_results: Dict) -> go.Figure:
+def create_emotionprint_summary_chart(ep_results: dict) -> go.Figure:
     """
     Donut chart summarizing emotional states from EmotionPrint™.
 
@@ -513,8 +513,8 @@ def create_emotionprint_summary_chart(ep_results: Dict) -> go.Figure:
 
 
 def generate_color_coded_transcript(
-    sentiment_sentences: List[Dict],
-    bias_flags: List[Dict]
+    sentiment_sentences: list[dict],
+    bias_flags: list[dict]
 ) -> str:
     """
     Generate full color-coded HTML transcript.
@@ -564,7 +564,7 @@ def generate_color_coded_transcript(
                     f"<span style='"
                     f"text-decoration: underline wavy #e67e22; "
                     f"color: #c0392b; font-weight: bold;"
-                    f"' title='Bias: {bias_keywords[keyword][\"category\"]}'>"
+                    f"' title='Bias: {bias_keywords[keyword]['category']}'>"
                     f"{keyword}"
                     f"</span>",
                     display_text
