@@ -297,3 +297,302 @@ def _empty_figure(message: str) -> go.Figure:
         height=400
     )
     return fig
+    
+def create_bias_timeline(bias_timeline: List[Dict]) -> go.Figure:
+    """
+    Bar chart showing bias flag count per 30-second bin.
+
+    Args:
+        bias_timeline: From BiasDetector.analyze_text()["timeline"]
+
+    Returns:
+        Plotly figure
+    """
+    if not bias_timeline:
+        return _empty_figure("No bias timeline data available")
+
+    time_labels  = [b["time_label"]  for b in bias_timeline]
+    bias_counts  = [b["bias_count"]  for b in bias_timeline]
+
+    # Color by intensity
+    max_count = max(bias_counts) if max(bias_counts) > 0 else 1
+    bar_colors = [
+        f"rgba(231, 76, 60, {0.3 + 0.7 * (c / max_count)})"
+        for c in bias_counts
+    ]
+
+    fig = go.Figure(data=[
+        go.Bar(
+            x=time_labels,
+            y=bias_counts,
+            marker_color=bar_colors,
+            hovertemplate="<b>Time:</b> %{x}<br><b>Bias Flags:</b> %{y}<extra></extra>"
+        )
+    ])
+
+    fig.update_layout(
+        title="Bias Flags Over Time",
+        xaxis_title="Timestamp",
+        yaxis_title="Number of Bias Flags",
+        template="plotly_white",
+        height=350
+    )
+
+    return fig
+
+
+def create_bias_category_chart(category_dist: Dict) -> go.Figure:
+    """
+    Horizontal bar chart of bias categories.
+
+    Args:
+        category_dist: {category: fraction} from BiasDetector
+
+    Returns:
+        Plotly figure
+    """
+    if not category_dist:
+        return _empty_figure("No bias categories detected")
+
+    categories = [c.replace("_", " ").title() for c in category_dist.keys()]
+    values     = [v * 100 for v in category_dist.values()]
+
+    category_colors = {
+        "Political Left":   "#3498db",
+        "Political Right":  "#e74c3c",
+        "Gender Bias":      "#9b59b6",
+        "Loaded Language":  "#e67e22",
+        "Weasel Words":     "#95a5a6"
+    }
+
+    colors = [category_colors.get(c, "#34495e") for c in categories]
+
+    fig = go.Figure(data=[
+        go.Bar(
+            x=values,
+            y=categories,
+            orientation="h",
+            marker_color=colors,
+            text=[f"{v:.1f}%" for v in values],
+            textposition="outside",
+            hovertemplate="<b>%{y}</b><br>%{x:.1f}%<extra></extra>"
+        )
+    ])
+
+    fig.update_layout(
+        title="Bias Category Distribution",
+        xaxis_title="Percentage of Bias Flags",
+        template="plotly_white",
+        height=350,
+        margin=dict(l=160)
+    )
+
+    return fig
+
+
+def create_emotionprint_timeline(ep_results: Dict) -> go.Figure:
+    """
+    Scatter/line plot of divergence scores over podcast time.
+
+    Args:
+        ep_results: From EmotionPrintAnalyzer.analyze_full_transcript()
+
+    Returns:
+        Plotly figure
+    """
+    segments = ep_results.get("all_segments", [])
+
+    if not segments:
+        return _empty_figure("No EmotionPrint™ data available")
+
+    timestamps  = [s["start_time"]       for s in segments]
+    divergences = [s["divergence_score"] for s in segments]
+    states      = [s["emotional_state"]  for s in segments]
+
+    state_colors = {
+        "Authentic":            "#2ecc71",
+        "Sarcasm":              "#e74c3c",
+        "Irony":                "#f39c12",
+        "Emotional Suppression":"#9b59b6",
+        "Emotional Mismatch":   "#e67e22"
+    }
+
+    point_colors = [state_colors.get(st, "#95a5a6") for st in states]
+    time_labels  = [
+        f"{int(t//60):02d}:{int(t%60):02d}" for t in timestamps
+    ]
+
+    fig = go.Figure()
+
+    # Divergence line
+    fig.add_trace(go.Scatter(
+        x=time_labels,
+        y=divergences,
+        mode="lines+markers",
+        name="Divergence Score",
+        line=dict(color="#3498db", width=2),
+        marker=dict(size=8, color=point_colors),
+        customdata=states,
+        hovertemplate=(
+            "<b>Time:</b> %{x}<br>"
+            "<b>Divergence:</b> %{y:.2f}<br>"
+            "<b>State:</b> %{customdata}<extra></extra>"
+        )
+    ))
+
+    # Threshold line
+    fig.add_hline(
+        y=0.55,
+        line_dash="dash",
+        line_color="red",
+        opacity=0.6,
+        annotation_text="Divergence Threshold",
+        annotation_position="right"
+    )
+
+    fig.update_layout(
+        title="EmotionPrint™ Divergence Over Time",
+        xaxis_title="Timestamp",
+        yaxis_title="Divergence Score (0–1)",
+        yaxis=dict(range=[0, 1.05]),
+        template="plotly_white",
+        height=380
+    )
+
+    return fig
+
+
+def create_emotionprint_summary_chart(ep_results: Dict) -> go.Figure:
+    """
+    Donut chart summarizing emotional states from EmotionPrint™.
+
+    Args:
+        ep_results: Full EmotionPrint™ analysis result
+
+    Returns:
+        Plotly figure
+    """
+    labels = ["Authentic", "Sarcasm", "Irony", "Suppression", "Mismatch"]
+    total  = ep_results.get("total_segments_analyzed", 1)
+    flagged = ep_results.get("flagged_segments_count", 0)
+
+    values = [
+        total - flagged,
+        ep_results.get("sarcasm_instances", 0),
+        ep_results.get("irony_instances", 0),
+        ep_results.get("suppression_instances", 0),
+        max(0, flagged - (
+            ep_results.get("sarcasm_instances", 0) +
+            ep_results.get("irony_instances", 0) +
+            ep_results.get("suppression_instances", 0)
+        ))
+    ]
+
+    colors = ["#2ecc71", "#e74c3c", "#f39c12", "#9b59b6", "#e67e22"]
+
+    fig = go.Figure(data=[
+        go.Pie(
+            labels=labels,
+            values=values,
+            marker=dict(colors=colors),
+            hole=0.45,
+            textinfo="label+percent",
+            textposition="outside"
+        )
+    ])
+
+    auth_score = ep_results.get("authenticity_score", 100.0)
+
+    fig.update_layout(
+        title=f"EmotionPrint™ Summary — Authenticity: {auth_score:.0f}%",
+        height=420,
+        showlegend=True
+    )
+
+    return fig
+
+
+def generate_color_coded_transcript(
+    sentiment_sentences: List[Dict],
+    bias_flags: List[Dict]
+) -> str:
+    """
+    Generate full color-coded HTML transcript.
+
+    Color scheme:
+    - Green background  → Positive sentiment
+    - Red background    → Negative sentiment
+    - Orange underline  → Bias keyword detected
+    - Purple border     → Sarcasm / EmotionPrint™ flag
+
+    Args:
+        sentiment_sentences: From SentimentAnalyzer
+        bias_flags         : From BiasDetector
+
+    Returns:
+        HTML string ready for st.markdown(..., unsafe_allow_html=True)
+    """
+    # Build bias keyword lookup
+    bias_keywords = {
+        flag["keyword"].lower(): flag
+        for flag in bias_flags
+    }
+
+    html_parts = ["<div style='font-family: Georgia, serif; line-height: 2.2;'>"]
+
+    for sentence_data in sentiment_sentences:
+        text  = sentence_data.get("text", "")
+        label = sentence_data.get("label", "neutral")
+        score = abs(sentence_data.get("score", 0))
+
+        # Background color for sentiment
+        if label == "positive":
+            bg = f"rgba(46, 204, 113, {max(0.08, score * 0.25)})"
+        elif label == "negative":
+            bg = f"rgba(231, 76, 60, {max(0.08, score * 0.25)})"
+        else:
+            bg = "transparent"
+
+        # Check for bias keywords
+        display_text = text
+        for keyword in bias_keywords:
+            if keyword in text.lower():
+                # Replace with orange underlined version
+                import re
+                pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+                display_text = pattern.sub(
+                    f"<span style='"
+                    f"text-decoration: underline wavy #e67e22; "
+                    f"color: #c0392b; font-weight: bold;"
+                    f"' title='Bias: {bias_keywords[keyword][\"category\"]}'>"
+                    f"{keyword}"
+                    f"</span>",
+                    display_text
+                )
+                break  # One highlight per sentence is enough for readability
+
+        # Sentiment label badge
+        badge_color = {
+            "positive": "#27ae60",
+            "negative": "#c0392b",
+            "neutral":  "#7f8c8d"
+        }.get(label, "#7f8c8d")
+
+        badge = (
+            f"<sup style='"
+            f"background:{badge_color}; color:white; "
+            f"font-size:9px; padding:1px 4px; border-radius:8px; "
+            f"margin-left:4px; font-family:monospace;"
+            f"'>{label[:3].upper()}</sup>"
+        )
+
+        html_parts.append(
+            f"<span style='"
+            f"background-color:{bg}; "
+            f"padding:3px 6px; border-radius:4px; "
+            f"display:inline; margin:2px 0;"
+            f"'>{display_text}{badge}</span> "
+        )
+
+    html_parts.append("</div>")
+    return "".join(html_parts)
