@@ -13,56 +13,64 @@ CREATE TABLE IF NOT EXISTS podcasts (
     error_message TEXT                      -- If status=failed
 );
 
--- Analyses table: stores complete analysis results
 CREATE TABLE IF NOT EXISTS analyses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    podcast_id TEXT NOT NULL,
-    
-    -- Sentiment metrics
-    sentiment_positive_pct REAL,            -- Percentage 0-100
-    sentiment_neutral_pct REAL,
-    sentiment_negative_pct REAL,
-    sentiment_score REAL,                   -- Overall score -1 to +1
-    
-    -- Tone metrics
-    dominant_tone TEXT,                     -- calm/aggressive/persuasive/etc
-    tone_calm_pct REAL,
-    tone_aggressive_pct REAL,
-    tone_persuasive_pct REAL,
-    tone_anxious_pct REAL,
-    tone_confident_pct REAL,
-    tone_excited_pct REAL,
-    
-    -- Bias metrics
-    bias_score INTEGER,                     -- 0-100
-    bias_level TEXT,                        -- Low/Moderate/High
-    bias_flags_count INTEGER,
-    
-    -- Processing metadata
-    processing_time REAL,                   -- Seconds
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    result_json_path TEXT,                  -- Path to full results JSON
-    
-    FOREIGN KEY (podcast_id) REFERENCES podcasts(id) ON DELETE CASCADE
+  analysis_id TEXT PRIMARY KEY,
+  podcast_id TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+  sentiment_label TEXT,
+  sentiment_score REAL,
+  sentiment_confidence REAL,
+
+  dominant_tone TEXT,
+  tone_confidence REAL,
+
+  bias_score REAL,
+  bias_level TEXT,
+  bias_flags_count INTEGER,
+
+  authenticity_score REAL,
+  sarcasm_count INTEGER,
+  suppression_count INTEGER,
+  irony_count INTEGER,
+
+  FOREIGN KEY(podcast_id) REFERENCES podcasts(podcast_id)
 );
 
--- Bias flags table: stores individual biased phrases
 CREATE TABLE IF NOT EXISTS bias_flags (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    analysis_id INTEGER NOT NULL,
-    phrase TEXT NOT NULL,
-    category TEXT NOT NULL,                 -- political_left/political_right/gender/loaded/weasel
-    severity TEXT,                          -- low/medium/high
-    sentence TEXT,                          -- Full sentence containing phrase
-    context TEXT,                           -- 2 sentences before + after
-    timestamp TEXT,                         -- Format: "MM:SS"
-    timestamp_seconds REAL,                 -- For sorting/filtering
-    
-    FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
+  flag_id TEXT PRIMARY KEY,
+  analysis_id TEXT NOT NULL,
+  keyword TEXT,
+  category TEXT,
+  severity TEXT,
+  timestamp REAL,
+  timestamp_formatted TEXT,
+  sentence TEXT,
+  text_context TEXT,
+  entities_json TEXT,
+  FOREIGN KEY(analysis_id) REFERENCES analyses(analysis_id)
 );
 
--- Index for faster queries
-CREATE INDEX IF NOT EXISTS idx_podcasts_status ON podcasts(status);
-CREATE INDEX IF NOT EXISTS idx_podcasts_upload_date ON podcasts(upload_date DESC);
-CREATE INDEX IF NOT EXISTS idx_analyses_podcast_id ON analyses(podcast_id);
-CREATE INDEX IF NOT EXISTS idx_bias_flags_analysis_id ON bias_flags(analysis_id);
+CREATE TABLE IF NOT EXISTS emotionprint_flags (
+  ep_flag_id TEXT PRIMARY KEY,
+  analysis_id TEXT NOT NULL,
+  segment_id INTEGER,
+  timestamp TEXT,
+  emotional_state TEXT,
+  divergence_score REAL,
+  confidence REAL,
+  text TEXT,
+  prosody_json TEXT,
+  FOREIGN KEY(analysis_id) REFERENCES analyses(analysis_id)
+);
+
+CREATE TABLE IF NOT EXISTS performance_runs (
+  perf_id TEXT PRIMARY KEY,
+  analysis_id TEXT NOT NULL,
+  total_duration_s REAL,
+  realtime_factor REAL,
+  peak_memory_mb REAL,
+  stages_json TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(analysis_id) REFERENCES analyses(analysis_id)
+);

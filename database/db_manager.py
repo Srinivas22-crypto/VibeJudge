@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-import json
+import json, uuid
 
 class DatabaseManager:
     """Manages all database operations for VibeJudge"""
@@ -153,117 +153,61 @@ class DatabaseManager:
         
         return [dict(row) for row in cursor.fetchall()]
     
-    def insert_analysis(
-        self,
-        podcast_id: str,
-        sentiment_data: Dict[str, Any],
-        tone_data: Dict[str, Any],
-        bias_data: Dict[str, Any],
-        processing_time: float,
-        result_json_path: str
-    ) -> Optional[int]:
-        """
-        Insert analysis results
-        
-        Args:
-            podcast_id: Associated podcast UUID
-            sentiment_data: Dictionary with sentiment metrics
-            tone_data: Dictionary with tone metrics
-            bias_data: Dictionary with bias metrics
-            processing_time: Total processing time in seconds
-            result_json_path: Path to full results JSON
-        
-        Returns:
-            Analysis ID if successful, None otherwise
-        """
-        try:
-            cursor = self.connection.cursor()
-            cursor.execute("""
-                INSERT INTO analyses (
-                    podcast_id,
-                    sentiment_positive_pct, sentiment_neutral_pct, sentiment_negative_pct,
-                    sentiment_score,
-                    dominant_tone,
-                    tone_calm_pct, tone_aggressive_pct, tone_persuasive_pct,
-                    tone_anxious_pct, tone_confident_pct, tone_excited_pct,
-                    bias_score, bias_level, bias_flags_count,
-                    processing_time, result_json_path
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                podcast_id,
-                sentiment_data.get('positive_pct', 0),
-                sentiment_data.get('neutral_pct', 0),
-                sentiment_data.get('negative_pct', 0),
-                sentiment_data.get('overall_score', 0),
-                tone_data.get('dominant_tone', 'Unknown'),
-                tone_data.get('calm_pct', 0),
-                tone_data.get('aggressive_pct', 0),
-                tone_data.get('persuasive_pct', 0),
-                tone_data.get('anxious_pct', 0),
-                tone_data.get('confident_pct', 0),
-                tone_data.get('excited_pct', 0),
-                bias_data.get('score', 0),
-                bias_data.get('level', 'Unknown'),
-                bias_data.get('flags_count', 0),
-                processing_time,
-                result_json_path
-            ))
-            
-            analysis_id = cursor.lastrowid
-            self.connection.commit()
-            
-            print(f"✓ Analysis {analysis_id} inserted for podcast {podcast_id}")
-            return analysis_id
-        
-        except Exception as e:
-            print(f"✗ Error inserting analysis: {e}")
-            return None
-    
-    def insert_bias_flags(
-        self,
-        analysis_id: int,
-        flags: List[Dict[str, Any]]
-    ) -> bool:
-        """
-        Insert bias flags for an analysis
-        
-        Args:
-            analysis_id: Associated analysis ID
-            flags: List of bias flag dictionaries
-        
-        Returns:
-            True if successful
-        """
-        try:
-            cursor = self.connection.cursor()
-            
-            for flag in flags:
-                cursor.execute("""
-                    INSERT INTO bias_flags (
-                        analysis_id, phrase, category, severity,
-                        sentence, context, timestamp, timestamp_seconds
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    analysis_id,
-                    flag.get('phrase', ''),
-                    flag.get('category', ''),
-                    flag.get('severity', 'medium'),
-                    flag.get('sentence', ''),
-                    flag.get('context', ''),
-                    flag.get('timestamp', '00:00'),
-                    flag.get('timestamp_seconds', 0.0)
-                ))
-            
-            self.connection.commit()
-            print(f"✓ {len(flags)} bias flags inserted for analysis {analysis_id}")
-            return True
-        
-        except Exception as e:
-            print(f"✗ Error inserting bias flags: {e}")
-            return False
-    
+    def insert_analysis(self, podcast_id: str, summary: dict) -> str:
+        analysis_id = str(uuid.uuid4())[:10]
+        self.connection.execute("""
+            INSERT INTO analyses(
+                analysis_id, podcast_id,
+                sentiment_label, sentiment_score, sentiment_confidence,
+                dominant_tone, tone_confidence,
+                bias_score, bias_level, bias_flags_count,
+                authenticity_score, sarcasm_count, suppression_count, irony_count
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            analysis_id, podcast_id,
+            summary.get("sentiment_label"), summary.get("sentiment_score"), summary.get("sentiment_confidence"),
+            summary.get("dominant_tone"), summary.get("tone_confidence"),
+            summary.get("bias_score"), summary.get("bias_level"), summary.get("bias_flags_count"),
+            summary.get("authenticity_score"), summary.get("sarcasm_count"),
+            summary.get("suppression_count"), summary.get("irony_count"),
+        ))
+        self.connection.commit()
+        return analysis_id
+
+    def insert_bias_flags(self, analysis_id: str, flags: list):
+        import uuid, json
+        for f in flags:
+            self.connection.execute("""
+            INSERT INTO bias_flags(
+                flag_id, analysis_id, keyword, category, severity,
+                timestamp, timestamp_formatted, sentence, text_context, entities_json
+          ) VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (
+          str(uuid.uuid4())[:12], analysis_id,
+          f.get("keyword"), f.get("category"), f.get("severity"),
+          f.get("timestamp"), f.get("timestamp_formatted"),
+          f.get("sentence"), f.get("text_context"),
+          json.dumps(f.get("entities", []))
+        ))
+        self.connection.commit()
+
+    def insert_emotionprint_flags(self, analysis_id: str, ep_flags: list):
+        import uuid, json
+        for f in ep_flags:
+            self.connection.execute("""
+          INSERT INTO emotionprint_flags(
+            ep_flag_id, analysis_id, segment_id, timestamp,
+            emotional_state, divergence_score, confidence,
+            text, prosody_json
+          ) VALUES (?,?,?,?,?,?,?,?,?)
+        """, (
+          str(uuid.uuid4())[:12], analysis_id,
+          f.get("segment_id"), f.get("timestamp"),
+          f.get("emotional_state"), f.get("divergence_score"),
+          f.get("confidence"), f.get("text"),
+          json.dumps(f.get("prosody_features", {}))
+        ))
+        self.connection.commit()
     def get_statistics(self) -> Dict[str, Any]:
         """
         Get overall statistics
