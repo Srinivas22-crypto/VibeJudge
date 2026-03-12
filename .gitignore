@@ -4,7 +4,6 @@
 *.so
 .Python
 build/
-ffmpeg/
 develop-eggs/
 dist/
 downloads/
@@ -25,6 +24,13 @@ MANIFEST
 # Virtual Environment
 env/
 ENV/
+venv/
+node_modules/
+ffmpeg/
+__pycache__/
+.env
+dist/
+build/
 
 # Streamlit
 .streamlit/
