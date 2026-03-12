@@ -1,5 +1,4 @@
 # Python
-__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -23,7 +22,6 @@ share/python-wheels/
 MANIFEST
 
 # Virtual Environment
-venv/
 env/
 ENV/
 
@@ -46,7 +44,6 @@ secrets.toml
 data/uploads/
 data/transcripts/
 data/results/
-ffmpeg/
 
 # Data & outputs
 data/
@@ -55,7 +52,6 @@ data/transcripts/
 data/results/
 
 # ML / audio files
-models/
 *.wav
 *.mp3
 *.pt
@@ -65,10 +61,7 @@ models/
 
 # Environment
 .env
-__pycache__/
 
-data/
-models/
 *.wav
 *.mp3
 *.pt
