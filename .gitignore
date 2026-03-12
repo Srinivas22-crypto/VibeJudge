@@ -4,6 +4,7 @@
 *.so
 .Python
 build/
+ffmpeg/
 develop-eggs/
 dist/
 downloads/
