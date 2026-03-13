@@ -8,6 +8,7 @@ from collections import defaultdict
 
 import numpy as np
 import spacy
+from utils.spacy_utils import load_spacy_model
 from pydub import AudioSegment
 
 logging.basicConfig(level=logging.INFO)
@@ -39,12 +40,8 @@ class BiasDetector:
         logger.info(f"Loaded {len(self.bias_dict)} bias categories")
         
         # Load spaCy for NER
-        try:
-            self.nlp = spacy.load("en_core_web_sm")
-            logger.info("✓ spaCy NER model loaded")
-        except OSError:
-            logger.error("spaCy model not found. Run: python -m spacy download en_core_web_sm")
-            raise
+        self.nlp = load_spacy_model("en_core_web_sm")
+        logger.info("✓ spaCy NER model loaded")
         
         logger.info("✓ Bias Detector initialized")
     

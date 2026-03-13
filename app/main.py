@@ -181,9 +181,12 @@ def run_full_analysis(uploaded_file, options: dict) -> dict:
         filename=audio_path.name,
         original_filename=uploaded_file.name,
         file_size=uploaded_file.size,
+        file_path=str(audio_path),
         duration=None
     )
-
+    @st.cache_resource
+    def load_transcriber(model_size):
+        return Transcriber(model_size=model_size)
     # ── Stage 1: Transcription ──────────────────────────
     with st.status("🎤 Stage 1 of 5 — Transcribing audio...", expanded=True) as status:
         st.write("Loading Whisper model...")
@@ -193,7 +196,7 @@ def run_full_analysis(uploaded_file, options: dict) -> dict:
         transcript = transcriber.transcribe(str(audio_path), word_timestamps=True)
 
         transcript_path = (
-            Path(config.TRANSCRIPTS_DIR) / f"{podcast_id}_transcript.json"
+            Path(config.TRANSCRIPT_DIR) / f"{podcast_id}_transcript.json"
         )
         transcriber.save_transcript(transcript, str(transcript_path))
         results["transcript"] = transcript
@@ -203,7 +206,7 @@ def run_full_analysis(uploaded_file, options: dict) -> dict:
         )
 
         status.update(
-            label=f"✅ Transcription complete — {transcript['word_count']} words",
+            label=f"✅ Transcription complete — {transcript.get('word_count',0)} words",
             state="complete"
         )
 

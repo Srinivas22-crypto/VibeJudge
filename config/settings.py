@@ -27,4 +27,4 @@ DATABASE_PATH = str(BASE_DIR / "vibejudge.db")
 # UI settings
 APP_TITLE = "VibeJudge - Podcast Analyzer"
 APP_ICON = "🎙️"
-PAGE_LAYOUT = "wide"
+PAGE_LAYOUT = "wide"   

@@ -16,5 +16,5 @@ def get_sentiment_pipeline():
 
 @st.cache_resource
 def get_spacy_model():
-    import spacy
-    return spacy.load("en_core_web_sm")
+    from utils.spacy_utils import load_spacy_model
+    return load_spacy_model("en_core_web_sm")

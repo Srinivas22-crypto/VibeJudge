@@ -13,6 +13,7 @@ from transformers import (
 )
 import torch
 import spacy
+from utils.spacy_utils import load_spacy_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ class SentimentAnalyzer:
             )
             
             # Load spaCy for sentence segmentation
-            self.nlp = spacy.load("en_core_web_sm", disable=["ner", "parser"])
+            self.nlp = load_spacy_model("en_core_web_sm", disable=["ner", "parser"])
             self.nlp.add_pipe('sentencizer')
             
             logger.info("✓ Sentiment analyzer initialized successfully")

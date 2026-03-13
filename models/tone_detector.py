@@ -13,6 +13,7 @@ from collections import Counter
 
 import numpy as np
 import spacy
+from utils.spacy_utils import load_spacy_model
 from textblob import TextBlob
 
 logging.basicConfig(level=logging.INFO)
@@ -128,7 +129,7 @@ class ToneDetector:
         
         try:
             # Load spaCy with minimal pipeline for efficiency
-            self.nlp = spacy.load("en_core_web_sm", disable=["ner"])
+            self.nlp = load_spacy_model("en_core_web_sm", disable=["ner"])
             self.nlp.add_pipe('sentencizer')
             logger.info("✓ Tone detector initialized successfully")
             
