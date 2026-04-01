@@ -1,10 +1,3 @@
-# File: app/main.py  (Complete Week 3 Version)
-
-"""
-VibeJudge - Main Streamlit Application
-Week 3: Full Pipeline Integration
-"""
-
 import json
 import uuid
 import logging
@@ -15,7 +8,6 @@ from pathlib import Path
 # ─────────────────────────────────────────────────────────
 # Path Resolution Fix (Streamlit)
 # ─────────────────────────────────────────────────────────
-# Add project root to sys.path to allow imports from sibling packages
 root_path = Path(__file__).resolve().parent.parent
 if str(root_path) not in sys.path:
     sys.path.insert(0, str(root_path))
@@ -23,7 +15,6 @@ if str(root_path) not in sys.path:
 import streamlit as st
 import plotly.graph_objects as go
 
-from models.transcriber import Transcriber
 from models.sentiment_analyzer import SentimentAnalyzer
 from models.tone_detector import ToneDetector
 from models.bias_detector import BiasDetector
@@ -32,7 +23,6 @@ from database.db_manager import DatabaseManager
 from utils.visualizations import (
     create_sentiment_timeline,
     create_sentiment_distribution_pie,
-    create_tone_heatmap,
     create_combined_dashboard,
     create_bias_timeline,
     create_bias_category_chart,
@@ -40,8 +30,12 @@ from utils.visualizations import (
     create_emotionprint_summary_chart,
     generate_color_coded_transcript
 )
-from utils.pdf_generator import generate_pdf_report
+from utils.pdf_generator import generate_analysis_pdf
 from config import settings as config
+from utils.audio_preprocessing import convert_to_wav_16k_mono
+from utils.audio_chunking import split_audio_into_chunks
+from utils.parallel_transcription import transcribe_chunks_parallel
+from utils.transcript_merger import merge_chunk_transcripts, save_merged_transcript
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -56,7 +50,28 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ─────────────────────────────────────────────────────────
+# Session State Initialization
+# ─────────────────────────────────────────────────────────
+def init_session_state():
+    defaults = {
+        "analysis_done": False,
+        "analysis_results": None,
+        "pdf_payload": None,
+        "pdf_bytes": None,
+        "uploaded_filename": None,
+        "uploaded_file_size": None,
+        "charts": {},
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+init_session_state()
+
+# ─────────────────────────────────────────────────────────
 # Custom CSS
+# ─────────────────────────────────────────────────────────
 st.markdown("""
 <style>
     .main-title {
@@ -91,12 +106,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
 # ─────────────────────────────────────────────────────────
 # Sidebar
 # ─────────────────────────────────────────────────────────
 def render_sidebar() -> str:
-    """Render sidebar and return selected page"""
     with st.sidebar:
         st.markdown("## 🎙️ VibeJudge")
         st.markdown("*Podcast Intelligence Platform*")
@@ -120,61 +133,260 @@ def render_sidebar() -> str:
 
     return page
 
-
 # ─────────────────────────────────────────────────────────
 # File Validation
 # ─────────────────────────────────────────────────────────
 def validate_uploaded_file(uploaded_file) -> tuple:
-    """
-    Validate uploaded file.
-
-    Returns:
-        (is_valid: bool, error_message: str)
-    """
-    # Format check
     allowed = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
     ext = Path(uploaded_file.name).suffix.lower()
-    if ext not in allowed:
-        return False, f"Unsupported format '{ext}'. Use: {', '.join(allowed)}"
 
-    # Size check (100 MB)
+    if ext not in allowed:
+        return False, f"Unsupported format '{ext}'. Use: {', '.join(sorted(allowed))}"
+
     if uploaded_file.size > 100 * 1024 * 1024:
         size_mb = uploaded_file.size / 1024 / 1024
         return False, f"File too large ({size_mb:.1f} MB). Maximum is 100 MB."
 
     return True, ""
 
+# ─────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────
+def safe_pct(value):
+    if value is None:
+        return 0.0
+    try:
+        value = float(value)
+        return round(value * 100, 2) if value <= 1 else round(value, 2)
+    except Exception:
+        return 0.0
+
+def create_tone_distribution_chart(tone: dict):
+    if not tone.get("tone_distribution"):
+        return None
+
+    labels = list(tone["tone_distribution"].keys())
+    values = [tone["tone_distribution"][label] * 100 for label in labels]
+
+    fig = go.Figure(data=[go.Bar(
+        x=labels,
+        y=values,
+        marker_color=[
+            "#3498db", "#e74c3c", "#f39c12",
+            "#9b59b6", "#2ecc71", "#1abc9c"
+        ][:len(labels)]
+    )])
+    fig.update_layout(
+        title="Tone Distribution (%)",
+        xaxis_title="Tone",
+        yaxis_title="Percentage",
+        template="plotly_white",
+        height=380
+    )
+    return fig
+
+def create_pdf_charts(results: dict) -> dict:
+    charts = {}
+    sentiment = results.get("sentiment", {})
+    tone = results.get("tone", {})
+    bias = results.get("bias", {})
+    ep = results.get("emotionprint", {})
+
+    try:
+        if sentiment.get("timeline"):
+            charts["sentiment_timeline"] = create_sentiment_timeline(sentiment["timeline"])
+    except Exception as e:
+        logger.warning(f"Could not create sentiment timeline chart: {e}")
+
+    try:
+        charts["sentiment_distribution"] = create_sentiment_distribution_pie(sentiment)
+    except Exception as e:
+        logger.warning(f"Could not create sentiment distribution chart: {e}")
+
+    try:
+        tone_fig = create_tone_distribution_chart(tone)
+        if tone_fig is not None:
+            charts["tone_distribution"] = tone_fig
+    except Exception as e:
+        logger.warning(f"Could not create tone chart: {e}")
+
+    try:
+        if bias.get("timeline"):
+            charts["bias_timeline"] = create_bias_timeline(bias["timeline"])
+    except Exception as e:
+        logger.warning(f"Could not create bias timeline chart: {e}")
+
+    try:
+        if bias.get("category_distribution"):
+            charts["bias_distribution"] = create_bias_category_chart(bias["category_distribution"])
+    except Exception as e:
+        logger.warning(f"Could not create bias category chart: {e}")
+
+    try:
+        charts["emotion_timeline"] = create_emotionprint_timeline(ep)
+    except Exception as e:
+        logger.warning(f"Could not create emotionprint timeline chart: {e}")
+
+    try:
+        charts["emotion_summary"] = create_emotionprint_summary_chart(ep)
+    except Exception as e:
+        logger.warning(f"Could not create emotionprint summary chart: {e}")
+
+    return charts
+
+def build_pdf_payload(results: dict) -> dict:
+    """
+    Convert your actual result structure into the structure
+    expected by generate_analysis_pdf().
+    """
+    transcript = results.get("transcript", {})
+    sentiment = results.get("sentiment", {})
+    tone = results.get("tone", {})
+    bias = results.get("bias", {})
+    ep = results.get("emotionprint", {})
+
+    transcript_text = transcript.get("text", "")
+    transcript_segments = transcript.get("segments", [])
+
+    word_count = transcript.get("word_count", 0)
+    duration_sec = transcript.get("duration", 0)
+    duration_min = round(duration_sec / 60, 2) if duration_sec else 0.0
+
+    key_moments = sentiment.get("key_moments", {})
+
+    most_positive = []
+    if key_moments.get("most_positive"):
+        mp = key_moments["most_positive"]
+        most_positive.append({
+            "start": mp.get("start", 0),
+            "end": mp.get("end", 0),
+            "text": mp.get("text", ""),
+            "score": mp.get("score", sentiment.get("overall_score", 0))
+        })
+
+    most_negative = []
+    if key_moments.get("most_negative"):
+        mn = key_moments["most_negative"]
+        most_negative.append({
+            "start": mn.get("start", 0),
+            "end": mn.get("end", 0),
+            "text": mn.get("text", ""),
+            "score": mn.get("score", sentiment.get("overall_score", 0))
+        })
+
+    sentiment_distribution = {
+        "positive_pct": safe_pct(sentiment.get("positive_ratio", 0)),
+        "neutral_pct": safe_pct(sentiment.get("neutral_ratio", 0)),
+        "negative_pct": safe_pct(sentiment.get("negative_ratio", 0)),
+    }
+
+    tone_distribution = {}
+    for label, value in tone.get("tone_distribution", {}).items():
+        tone_distribution[label] = safe_pct(value)
+
+    flagged_instances = []
+    for flag in bias.get("bias_flags", []):
+        flagged_instances.append({
+            "start": flag.get("timestamp_seconds", 0),
+            "end": flag.get("timestamp_seconds", 0),
+            "sentence": flag.get("text_context", ""),
+            "matches": [{
+                "keyword": flag.get("keyword", ""),
+                "category": flag.get("category", "")
+            }],
+            "final_score": round(flag.get("confidence", 0.0), 4),
+            "level": flag.get("severity", "LOW")
+        })
+
+    flagged_moments = []
+    for seg in ep.get("flagged_segments", []):
+        flagged_moments.append({
+            "time_label": seg.get("timestamp", "N/A"),
+            "type": seg.get("emotional_state", "Emotional Mismatch"),
+            "confidence": f"{seg.get('confidence', 0) * 100:.0f}%",
+            "divergence": seg.get("divergence_score", 0)
+        })
+
+    payload = {
+        "podcast_name": results.get("filename", st.session_state.uploaded_filename or "Unknown"),
+        "duration_min": duration_min,
+        "transcription": {
+            "word_count": word_count,
+            "segments": transcript_segments
+        },
+        "sentiment": {
+            "summary": {
+                "overall_label": sentiment.get("overall_sentiment", "N/A").upper(),
+                "overall_score": sentiment.get("overall_score", "N/A"),
+                "confidence": sentiment.get("confidence", "N/A"),
+                "sentence_count": sentiment.get("sentence_count", "N/A"),
+                "distribution": sentiment_distribution,
+                "most_positive": most_positive,
+                "most_negative": most_negative
+            }
+        },
+        "tone": {
+            "summary": {
+                "dominant_tone": tone.get("dominant_tone", "N/A"),
+                "tone_score": tone.get("dominant_score", "N/A"),
+                "confidence": tone.get("confidence", "N/A"),
+                "distribution": tone_distribution
+            }
+        },
+        "bias": {
+            "summary": {
+                "bias_score": bias.get("overall_bias_score", "N/A"),
+                "bias_level": bias.get("bias_level", "N/A"),
+                "total_flags": bias.get("bias_flags_count", 0)
+            },
+            "category_distribution": bias.get("category_distribution", {}),
+            "flagged_instances": flagged_instances
+        },
+        "emotionprint": {
+            "summary": {
+                "authenticity_pct": f"{ep.get('authenticity_score', 0):.0f}%",
+                "mismatch_count": len(ep.get("flagged_segments", [])),
+                "sarcasm_count": ep.get("sarcasm_instances", 0),
+                "suppression_count": ep.get("suppression_instances", 0),
+                "irony_count": ep.get("irony_instances", 0)
+            },
+            "flagged_moments": flagged_moments
+        },
+        "transcript_text": transcript_text
+    }
+
+    return payload
 
 # ─────────────────────────────────────────────────────────
 # Analysis Pipeline
 # ─────────────────────────────────────────────────────────
 def run_full_analysis(uploaded_file, options: dict) -> dict:
-    """
-    Run complete analysis pipeline.
-
-    Args:
-        uploaded_file : Streamlit UploadedFile object
-        options       : Dict of user-selected analysis options
-
-    Returns:
-        Dict containing all results
-    """
     results = {}
     podcast_id = str(uuid.uuid4())[:8]
 
-    # ── Save uploaded file ──────────────────────────────
     upload_dir = Path(config.UPLOAD_DIR)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     audio_path = upload_dir / f"{podcast_id}_{uploaded_file.name}"
     with open(audio_path, "wb") as f:
-        f.write(uploaded_file.read())
+        f.write(uploaded_file.getbuffer())
+
+    # Audio Preprocessing
+    processed_audio_path = convert_to_wav_16k_mono(str(audio_path))
+    audio_path = Path(processed_audio_path)
+
+    # Audio Chunking
+    chunk_paths = split_audio_into_chunks(
+        str(audio_path),
+        chunk_length_ms=5 * 60 * 1000
+    )
 
     results["podcast_id"] = podcast_id
     results["audio_path"] = str(audio_path)
-    results["filename"]   = uploaded_file.name
+    results["filename"] = uploaded_file.name
+    results["chunk_paths"] = chunk_paths
 
-    # ── Database entry ──────────────────────────────────
+    # Database entry
     db = DatabaseManager()
     db.insert_podcast(
         podcast_id=podcast_id,
@@ -184,33 +396,54 @@ def run_full_analysis(uploaded_file, options: dict) -> dict:
         file_path=str(audio_path),
         duration=None
     )
-    @st.cache_resource
-    def load_transcriber(model_size):
-        return Transcriber(model_size=model_size)
-    # ── Stage 1: Transcription ──────────────────────────
+
+    # Stage 1: Transcription
     with st.status("🎤 Stage 1 of 5 — Transcribing audio...", expanded=True) as status:
-        st.write("Loading Whisper model...")
-        transcriber = Transcriber(model_size=config.WHISPER_MODEL_SIZE)
+        st.write("⚡ Running parallel transcription on chunks...")
 
-        st.write("Transcribing audio (this may take a moment)...")
-        transcript = transcriber.transcribe(str(audio_path), word_timestamps=True)
-
-        transcript_path = (
-            Path(config.TRANSCRIPT_DIR) / f"{podcast_id}_transcript.json"
+        chunk_results_raw = transcribe_chunks_parallel(
+            chunk_paths,
+            model_size=getattr(config, "WHISPER_MODEL_SIZE", "small"),
+            max_workers=2
         )
-        transcriber.save_transcript(transcript, str(transcript_path))
+
+        # Normalize chunk result structure
+        normalized_chunk_results = []
+        for idx, item in enumerate(chunk_results_raw):
+            if isinstance(item, dict) and "result" in item:
+                normalized_chunk_results.append(item)
+            else:
+                normalized_chunk_results.append({
+                    "chunk_path": chunk_paths[idx] if idx < len(chunk_paths) else f"chunk_{idx:03d}.wav",
+                    "result": item
+                })
+
+        merged_transcript = merge_chunk_transcripts(
+            normalized_chunk_results,
+            chunk_duration_sec=300
+        )
+
+        merged_transcript["word_count"] = len(merged_transcript.get("text", "").split())
+
+        segments = merged_transcript.get("segments", [])
+        merged_transcript["duration"] = max([seg.get("end", 0) for seg in segments], default=0)
+
+        transcript_path = Path(config.TRANSCRIPT_DIR) / f"{podcast_id}_transcript.json"
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+
+        save_merged_transcript(merged_transcript, str(transcript_path))
+
+        transcript = merged_transcript
         results["transcript"] = transcript
 
-        db.update_podcast_status(
-            podcast_id, "transcribed", str(transcript_path)
-        )
+        db.update_podcast_status(podcast_id, "transcribed", str(transcript_path))
 
         status.update(
-            label=f"✅ Transcription complete — {transcript.get('word_count',0)} words",
+            label=f"✅ Transcription complete — {transcript.get('word_count', 0)} words",
             state="complete"
         )
 
-    # ── Stage 2: Sentiment Analysis ─────────────────────
+    # Stage 2: Sentiment
     with st.status("💬 Stage 2 of 5 — Sentiment analysis...", expanded=False) as status:
         sa = SentimentAnalyzer()
         sentiment = sa.analyze_text(
@@ -228,7 +461,7 @@ def run_full_analysis(uploaded_file, options: dict) -> dict:
             state="complete"
         )
 
-    # ── Stage 3: Tone Detection ──────────────────────────
+    # Stage 3: Tone
     with st.status("🎭 Stage 3 of 5 — Tone detection...", expanded=False) as status:
         td = ToneDetector()
         tone = td.analyze_text(
@@ -245,7 +478,7 @@ def run_full_analysis(uploaded_file, options: dict) -> dict:
             state="complete"
         )
 
-    # ── Stage 4: Bias Detection ──────────────────────────
+    # Stage 4: Bias
     with st.status("🔍 Stage 4 of 5 — Bias detection...", expanded=False) as status:
         bd = BiasDetector()
         bias = bd.analyze_text(
@@ -264,7 +497,7 @@ def run_full_analysis(uploaded_file, options: dict) -> dict:
             state="complete"
         )
 
-    # ── Stage 5: EmotionPrint™ ───────────────────────────
+    # Stage 5: EmotionPrint
     with st.status("🧠 Stage 5 of 5 — EmotionPrint™ analysis...", expanded=False) as status:
         ep = EmotionPrintAnalyzer()
 
@@ -273,7 +506,7 @@ def run_full_analysis(uploaded_file, options: dict) -> dict:
             ep_results = ep.analyze_full_transcript(
                 audio_path=str(audio_path),
                 segments=segments,
-                sample_every_n=3  # Balance speed vs coverage
+                sample_every_n=3
             )
         else:
             ep_results = ep._empty_full_result()
@@ -291,25 +524,20 @@ def run_full_analysis(uploaded_file, options: dict) -> dict:
             state="complete"
         )
 
-    # ── Update final DB status ───────────────────────────
     db.update_podcast_status(podcast_id, "completed", str(transcript_path))
 
     return results
-
 
 # ─────────────────────────────────────────────────────────
 # Results Rendering
 # ─────────────────────────────────────────────────────────
 def render_results(results: dict):
-    """Render all analysis results in tabs"""
-
     transcript = results["transcript"]
-    sentiment  = results["sentiment"]
-    tone       = results["tone"]
-    bias       = results["bias"]
-    ep         = results["emotionprint"]
+    sentiment = results["sentiment"]
+    tone = results["tone"]
+    bias = results["bias"]
+    ep = results["emotionprint"]
 
-    # ── Top-level KPIs ───────────────────────────────────
     st.markdown('<p class="section-header">📊 Analysis Summary</p>', unsafe_allow_html=True)
 
     k1, k2, k3, k4, k5 = st.columns(5)
@@ -319,27 +547,13 @@ def render_results(results: dict):
         sentiment["overall_sentiment"].capitalize(),
         f"{sentiment['overall_score']:+.2f}"
     )
-    k2.metric(
-        "Dominant Tone",
-        tone["dominant_tone"].capitalize()
-    )
-    k3.metric(
-        "Bias Level",
-        bias["bias_level"],
-        f"{bias['overall_bias_score']:.0f}/100"
-    )
-    k4.metric(
-        "Authenticity",
-        f"{ep['authenticity_score']:.0f}%"
-    )
-    k5.metric(
-        "Duration",
-        f"{transcript.get('duration', 0)/60:.1f} min"
-    )
+    k2.metric("Dominant Tone", tone["dominant_tone"].capitalize())
+    k3.metric("Bias Level", bias["bias_level"], f"{bias['overall_bias_score']:.0f}/100")
+    k4.metric("Authenticity", f"{ep['authenticity_score']:.0f}%")
+    k5.metric("Duration", f"{transcript.get('duration', 0) / 60:.1f} min")
 
     st.divider()
 
-    # ── Tabs ─────────────────────────────────────────────
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📈 Sentiment",
         "🎭 Tone",
@@ -349,14 +563,14 @@ def render_results(results: dict):
         "📥 Export"
     ])
 
-    # ────────── TAB 1: SENTIMENT ─────────────────────────
+    # TAB 1: Sentiment
     with tab1:
         st.subheader("Sentiment Analysis")
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("Overall Score",    f"{sentiment['overall_score']:+.3f}")
-        c2.metric("Confidence",       f"{sentiment['confidence']*100:.1f}%")
-        c3.metric("Sentences",        sentiment["sentence_count"])
+        c1.metric("Overall Score", f"{sentiment['overall_score']:+.3f}")
+        c2.metric("Confidence", f"{sentiment['confidence'] * 100:.1f}%")
+        c3.metric("Sentences", sentiment["sentence_count"])
 
         col_a, col_b = st.columns(2)
 
@@ -373,58 +587,38 @@ def render_results(results: dict):
                 use_container_width=True
             )
 
-        # Key moments
         km = sentiment.get("key_moments", {})
         if km.get("most_positive"):
             st.success(f"🌟 **Most Positive:** _{km['most_positive']['text']}_")
         if km.get("most_negative"):
             st.error(f"⚠️ **Most Negative:** _{km['most_negative']['text']}_")
 
-    # ────────── TAB 2: TONE ──────────────────────────────
+    # TAB 2: Tone
     with tab2:
         st.subheader("Tone Detection")
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("Dominant Tone",  tone["dominant_tone"].capitalize())
-        c2.metric("Tone Score",     f"{tone['dominant_score']:.2f}")
-        c3.metric("Confidence",     f"{tone['confidence']*100:.1f}%")
+        c1.metric("Dominant Tone", tone["dominant_tone"].capitalize())
+        c2.metric("Tone Score", f"{tone['dominant_score']:.2f}")
+        c3.metric("Confidence", f"{tone['confidence'] * 100:.1f}%")
 
-        if tone.get("tone_distribution"):
-            labels = list(tone["tone_distribution"].keys())
-            values = [tone["tone_distribution"][l] * 100 for l in labels]
-
-            fig = go.Figure(data=[go.Bar(
-                x=labels,
-                y=values,
-                marker_color=[
-                    "#3498db","#e74c3c","#f39c12",
-                    "#9b59b6","#2ecc71","#1abc9c"
-                ][:len(labels)]
-            )])
-            fig.update_layout(
-                title="Tone Distribution (%)",
-                xaxis_title="Tone",
-                yaxis_title="Percentage",
-                template="plotly_white",
-                height=380
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        tone_fig = create_tone_distribution_chart(tone)
+        if tone_fig is not None:
+            st.plotly_chart(tone_fig, use_container_width=True)
 
         if tone.get("tone_examples"):
             st.write("#### 🎯 Representative Examples per Tone")
             for tone_name, ex in tone["tone_examples"].items():
-                with st.expander(
-                    f"{tone_name.capitalize()} — score: {ex['score']:.2f}"
-                ):
+                with st.expander(f"{tone_name.capitalize()} — score: {ex['score']:.2f}"):
                     st.markdown(f"> _{ex['text']}_")
 
-    # ────────── TAB 3: BIAS ──────────────────────────────
+    # TAB 3: Bias
     with tab3:
         st.subheader("Bias Detection")
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("Bias Score",  f"{bias['overall_bias_score']:.1f}/100")
-        c2.metric("Bias Level",  bias["bias_level"])
+        c1.metric("Bias Score", f"{bias['overall_bias_score']:.1f}/100")
+        c2.metric("Bias Level", bias["bias_level"])
         c3.metric("Total Flags", bias["bias_flags_count"])
 
         col_a, col_b = st.columns(2)
@@ -443,17 +637,10 @@ def render_results(results: dict):
                     use_container_width=True
                 )
 
-        # Bias flags table
         if bias.get("bias_flags"):
             st.write("#### 🚩 Flagged Instances")
 
             for i, flag in enumerate(bias["bias_flags"][:20], 1):
-                sev_color = {
-                    "HIGH":   "badge-high",
-                    "MEDIUM": "badge-medium",
-                    "LOW":    "badge-low"
-                }.get(flag["severity"], "")
-
                 with st.expander(
                     f"#{i} — '{flag['keyword']}' "
                     f"[{flag['category'].replace('_', ' ').upper()}] "
@@ -474,21 +661,15 @@ def render_results(results: dict):
                             with open(ctx_path, "rb") as audio_f:
                                 st.audio(audio_f.read(), format="audio/wav")
 
-            if bias["bias_flags_count"] > 20:
-                st.info(
-                    f"Showing 20 of {bias['bias_flags_count']} flags. "
-                    "Download JSON for complete list."
-                )
-
-    # ────────── TAB 4: EMOTIONPRINT™ ─────────────────────
+    # TAB 4: EmotionPrint
     with tab4:
         st.subheader("EmotionPrint™ — Prosody-Semantic Divergence")
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Authenticity",  f"{ep['authenticity_score']:.0f}%")
-        c2.metric("Sarcasm",       ep["sarcasm_instances"])
-        c3.metric("Suppression",   ep["suppression_instances"])
-        c4.metric("Irony",         ep["irony_instances"])
+        c1.metric("Authenticity", f"{ep['authenticity_score']:.0f}%")
+        c2.metric("Sarcasm", ep["sarcasm_instances"])
+        c3.metric("Suppression", ep["suppression_instances"])
+        c4.metric("Irony", ep["irony_instances"])
 
         col_a, col_b = st.columns(2)
 
@@ -504,21 +685,20 @@ def render_results(results: dict):
                 use_container_width=True
             )
 
-        # Flagged segments
         if ep.get("flagged_segments"):
             st.write("#### 🎭 Flagged Moments")
 
             for seg in ep["flagged_segments"][:10]:
                 icon = {
-                    "Sarcasm":              "😏",
-                    "Emotional Suppression":"😶",
-                    "Irony":                "🙃",
-                    "Emotional Mismatch":   "❓"
+                    "Sarcasm": "😏",
+                    "Emotional Suppression": "😶",
+                    "Irony": "🙃",
+                    "Emotional Mismatch": "❓"
                 }.get(seg["emotional_state"], "⚠️")
 
                 with st.expander(
                     f"{icon} {seg['emotional_state']} @ {seg['timestamp']} "
-                    f"| Confidence: {seg['confidence']*100:.0f}% "
+                    f"| Confidence: {seg['confidence'] * 100:.0f}% "
                     f"| Divergence: {seg['divergence_score']:.2f}"
                 ):
                     st.markdown(f"**Text:** _{seg['text']}_")
@@ -532,23 +712,14 @@ def render_results(results: dict):
                         f"Rate: {pf['speech_rate']:.1f} syl/s"
                     )
 
-        # Key moments
-        km = ep.get("key_moments", {})
-        if km.get("highest_sarcasm"):
-            hs = km["highest_sarcasm"]
-            st.info(
-                f"🏆 **Highest-Confidence Sarcasm** @ {hs['timestamp']}: "
-                f"_{hs['text'][:100]}_  (confidence: {hs['confidence']*100:.0f}%)"
-            )
-
-    # ────────── TAB 5: TRANSCRIPT ────────────────────────
+    # TAB 5: Transcript
     with tab5:
         st.subheader("Color-Coded Transcript")
 
         st.markdown("""
-        **Legend:**
-        🟢 Green = Positive sentiment &nbsp;&nbsp;
-        🔴 Red = Negative sentiment &nbsp;&nbsp;
+        **Legend:**  
+        🟢 Green = Positive sentiment  
+        🔴 Red = Negative sentiment  
         🟠 Orange underline = Bias keyword
         """)
 
@@ -559,13 +730,7 @@ def render_results(results: dict):
             )
             st.markdown(html, unsafe_allow_html=True)
 
-            if len(sentiment["sentences"]) > 60:
-                st.info(
-                    f"Showing all {len(sentiment['sentences'])} sentences. "
-                    "Scroll to view full transcript."
-                )
-
-    # ────────── TAB 6: EXPORT ────────────────────────────
+    # TAB 6: Export
     with tab6:
         st.subheader("Export Analysis Report")
 
@@ -576,62 +741,64 @@ def render_results(results: dict):
             st.write("Machine-readable, includes all raw data")
 
             json_report = {
-                "podcast_id":  results["podcast_id"],
-                "filename":    results["filename"],
+                "podcast_id": results["podcast_id"],
+                "filename": results["filename"],
                 "analyzed_at": datetime.now().isoformat(),
-                "transcript":  results["transcript"],
-                "sentiment":   results["sentiment"],
-                "tone":        results["tone"],
-                "bias":        results["bias"],
-                "emotionprint":results["emotionprint"]
+                "transcript": results["transcript"],
+                "sentiment": results["sentiment"],
+                "tone": results["tone"],
+                "bias": results["bias"],
+                "emotionprint": results["emotionprint"]
             }
 
             st.download_button(
                 label="📥 Download JSON",
-                data=json.dumps(json_report, indent=2),
+                data=json.dumps(json_report, indent=2, ensure_ascii=False),
                 file_name=f"vibejudge_{results['podcast_id']}.json",
-                mime="application/json"
+                mime="application/json",
+                key=f"download_json_{results['podcast_id']}"
             )
 
         with ex_col2:
             st.write("**📑 PDF Report**")
             st.write("Professional report with charts and summary")
 
-            if st.button("🖨️ Generate PDF Report"):
-                with st.spinner("Generating PDF..."):
-                    try:
-                        pdf_path = (
-                            Path(config.RESULTS_DIR) /
-                            f"{results['podcast_id']}_report.pdf"
-                        )
-                        generate_pdf_report(
-                            podcast_id=results["podcast_id"],
-                            filename=results["filename"],
-                            transcript_data=results["transcript"],
-                            sentiment_results=results["sentiment"],
-                            tone_results=results["tone"],
-                            output_path=str(pdf_path)
-                        )
+            if st.session_state.pdf_bytes is None:
+                if st.button("🖨️ Generate PDF Report", key=f"generate_pdf_{results['podcast_id']}"):
+                    with st.spinner("Generating PDF..."):
+                        try:
+                            pdf_payload = build_pdf_payload(results)
+                            charts = create_pdf_charts(results)
 
-                        with open(pdf_path, "rb") as pf:
-                            st.download_button(
-                                label="📥 Download PDF",
-                                data=pf.read(),
-                                file_name=f"vibejudge_{results['podcast_id']}.pdf",
-                                mime="application/pdf"
+                            st.session_state.pdf_payload = pdf_payload
+                            st.session_state.charts = charts
+                            st.session_state.pdf_bytes = generate_analysis_pdf(
+                                pdf_payload,
+                                charts=charts
                             )
 
-                        st.success("✅ PDF report ready!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"PDF generation failed: {e}")
+                            logger.exception("PDF generation error")
 
-                    except Exception as e:
-                        st.error(f"PDF generation failed: {e}")
+            else:
+                st.success("✅ PDF is ready")
+                st.download_button(
+                    label="📥 Download PDF",
+                    data=st.session_state.pdf_bytes,
+                    file_name=f"vibejudge_{results['podcast_id']}.pdf",
+                    mime="application/pdf",
+                    key=f"download_pdf_{results['podcast_id']}"
+                )
 
+        with st.expander("🔍 Debug PDF Payload"):
+            st.json(st.session_state.pdf_payload if st.session_state.pdf_payload else {})
 
 # ─────────────────────────────────────────────────────────
 # Page: Analyze
 # ─────────────────────────────────────────────────────────
 def page_analyze():
-    """Main analysis page"""
     st.markdown('<p class="main-title">🎙️ VibeJudge</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="subtitle">Multimodal Podcast Sentiment, Tone & Bias Analyzer</p>',
@@ -639,7 +806,6 @@ def page_analyze():
     )
     st.divider()
 
-    # Upload section
     st.markdown("### 📁 Upload Podcast")
 
     uploaded_file = st.file_uploader(
@@ -655,13 +821,14 @@ def page_analyze():
             st.error(f"❌ {error_msg}")
             return
 
-        # File info
+        st.session_state.uploaded_filename = uploaded_file.name
+        st.session_state.uploaded_file_size = uploaded_file.size
+
         info_col1, info_col2, info_col3 = st.columns(3)
         info_col1.success(f"✅ **{uploaded_file.name}**")
-        info_col2.info(f"📦 {uploaded_file.size/1024/1024:.1f} MB")
+        info_col2.info(f"📦 {uploaded_file.size / 1024 / 1024:.1f} MB")
         info_col3.info(f"📄 {Path(uploaded_file.name).suffix.upper()}")
 
-        # Analysis options
         st.markdown("### ⚙️ Analysis Options")
         opt_col1, opt_col2, opt_col3 = st.columns(3)
 
@@ -684,43 +851,43 @@ def page_analyze():
                 index=1
             )
 
-        # Map model selection
         model_map = {
-            "base (faster)":         "base",
-            "small (recommended)":   "small",
-            "medium (accurate)":     "medium"
+            "base (faster)": "base",
+            "small (recommended)": "small",
+            "medium (accurate)": "medium"
         }
         config.WHISPER_MODEL_SIZE = model_map[whisper_model]
 
         options = {
-            "run_emotionprint":      run_emotionprint,
+            "run_emotionprint": run_emotionprint,
             "extract_audio_context": extract_audio_ctx
         }
 
         st.divider()
 
-        # Analyze button
-        if st.button(
-            "🚀 Start Analysis",
-            type="primary",
-            use_container_width=True
-        ):
-            try:
-                results = run_full_analysis(uploaded_file, options)
-                st.success("🎉 **Analysis Complete!** Explore results in the tabs below.")
-                st.balloons()
-                render_results(results)
+        if st.button("🚀 Start Analysis", key="start_analysis_btn"):
+            with st.spinner("Running analysis..."):
+                try:
+                    results = run_full_analysis(uploaded_file, options)
 
-            except Exception as e:
-                st.error(f"❌ Analysis failed: {e}")
-                logger.error(f"Analysis error: {e}", exc_info=True)
+                    st.session_state.analysis_results = results
+                    st.session_state.analysis_done = True
+                    st.session_state.pdf_bytes = None
+                    st.session_state.pdf_payload = None
+                    st.session_state.charts = {}
 
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Analysis failed: {e}")
+                    logger.exception("Analysis pipeline error")
+
+    if st.session_state.analysis_done and st.session_state.analysis_results is not None:
+        render_results(st.session_state.analysis_results)
 
 # ─────────────────────────────────────────────────────────
 # Page: Dashboard
 # ─────────────────────────────────────────────────────────
 def page_dashboard():
-    """Dashboard page showing recent analyses"""
     st.title("📊 Analysis Dashboard")
 
     db = DatabaseManager()
@@ -734,8 +901,8 @@ def page_dashboard():
 
     s1, s2, s3 = st.columns(3)
     s1.metric("Total Analyzed", stats.get("total_podcasts", 0))
-    s2.metric("Completed",      stats.get("completed",     0))
-    s3.metric("This Week",      stats.get("this_week",     0))
+    s2.metric("Completed", stats.get("completed", 0))
+    s3.metric("This Week", stats.get("this_week", 0))
 
     st.divider()
     st.write("### Recent Analyses")
@@ -747,35 +914,28 @@ def page_dashboard():
             f"{pod['upload_date'][:10]}"
         ):
             c1, c2, c3 = st.columns(3)
-            c1.write(f"**ID:** {pod['podcast_id']}")
+            c1.write(f"**ID:** {pod.get('podcast_id', 'N/A')}")
             c2.write(
-                f"**Duration:** "
-                f"{pod['duration']/60:.1f} min" if pod["duration"] else "N/A"
+                f"**Duration:** {pod['duration'] / 60:.1f} min"
+                if pod.get("duration") else "N/A"
             )
-            c3.write(
-                f"**Size:** "
-                f"{pod['file_size']/1024/1024:.1f} MB"
-            )
+            c3.write(f"**Size:** {pod.get('file_size', 0) / 1024 / 1024:.1f} MB")
 
-            result_path = (
-                Path(config.RESULTS_DIR) /
-                f"{pod['podcast_id']}_sentiment.json"
-            )
+            pod_id = pod.get("podcast_id") or pod.get("id") or "unknown"
+            result_path = Path(config.RESULTS_DIR) / f"{pod_id}_sentiment.json"
             if result_path.exists():
-                with open(result_path) as f:
+                with open(result_path, "r", encoding="utf-8") as f:
                     cached = json.load(f)
                 st.write(
                     f"**Sentiment:** "
-                    f"{cached['overall_sentiment'].upper()} "
-                    f"({cached['overall_score']:+.2f})"
+                    f"{cached.get('overall_sentiment', 'N/A').upper()} "
+                    f"({cached.get('overall_score', 0):+.2f})"
                 )
-
 
 # ─────────────────────────────────────────────────────────
 # Page: About
 # ─────────────────────────────────────────────────────────
 def page_about():
-    """About page"""
     st.title("ℹ️ About VibeJudge")
 
     st.markdown("""
@@ -796,7 +956,7 @@ def page_about():
 
     ## Technology Stack
 
-    - **ASR:** OpenAI Whisper
+    - **ASR:** OpenAI Whisper / Faster-Whisper
     - **Sentiment:** Cardiff NLP RoBERTa
     - **Prosody:** librosa acoustic analysis
     - **NER:** spaCy en_core_web_sm
@@ -811,9 +971,8 @@ def page_about():
     - Akanksha Bhosle (24075A6601)
 
     **Guide:** [Your Guide Name]  
-    **Version:** 1.3 — Week 3 Build
+    **Version:** 1.3
     """)
-
 
 # ─────────────────────────────────────────────────────────
 # Entry Point
@@ -827,7 +986,6 @@ def main():
         page_dashboard()
     else:
         page_about()
-
 
 if __name__ == "__main__":
     main()

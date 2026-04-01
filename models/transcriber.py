@@ -1,106 +1,39 @@
-import whisper
+from faster_whisper import WhisperModel
+import os
 import json
-from pathlib import Path
-import ffmpeg
-from config.settings import WHISPER_MODEL_SIZE
 
 
-class Transcriber:
-    """
-    Wrapper class for Whisper transcription
-    """
-
-    def __init__(self, model_size: str = WHISPER_MODEL_SIZE):
+class FastTranscriber:
+    def __init__(self, model_size="small", device="cpu", compute_type="int8"):
         self.model_size = model_size
-        self.model = None
+        self.device = device
+        self.compute_type = compute_type
+        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
-    # ---------------------------------------------------
-    # Load Whisper model
-    # ---------------------------------------------------
-    def load_model(self):
-        if self.model is None:
-            self.model = whisper.load_model(self.model_size)
+    def transcribe_chunk(self, audio_path: str):
+        """
+        Transcribe a single chunk.
+        """
+        segments, info = self.model.transcribe(audio_path, beam_size=1)
 
-    # ---------------------------------------------------
-    # Preprocess audio (convert to 16kHz mono WAV)
-    # ---------------------------------------------------
-    def preprocess_audio(self, file_path: str) -> str:
+        segment_list = []
+        full_text = []
 
-        path = Path(file_path)
-        output_path = path.with_suffix(".processed.wav")
+        for segment in segments:
+            segment_data = {
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text.strip()
+            }
+            segment_list.append(segment_data)
+            full_text.append(segment.text.strip())
 
-        # If already processed, reuse it
-        if output_path.exists() and output_path.stat().st_size > 0:
-            return str(output_path)
+        return {
+            "text": " ".join(full_text),
+            "segments": segment_list,
+            "language": info.language if info else "unknown"
+        }
 
-        try:
-            stream = ffmpeg.input(str(path))
-            stream = ffmpeg.output(
-                stream,
-                str(output_path),
-                ar="16000",   # sample rate
-                ac="1"        # mono
-            )
-            ffmpeg.run(stream, overwrite_output=True, quiet=True)
-
-            return str(output_path)
-
-        except ffmpeg.Error as e:
-            print(f"FFmpeg error: {e}")
-            return str(path)
-
-        except Exception as e:
-            print(f"Preprocessing error: {e}")
-            return str(path)
-
-    # ---------------------------------------------------
-    # Transcribe audio
-    # ---------------------------------------------------
-    def transcribe(self, audio_path: str, word_timestamps: bool = False) -> dict:
-
-        self.load_model()
-
-        # preprocess first
-        processed_audio = self.preprocess_audio(audio_path)
-
-        result = self.model.transcribe(
-            processed_audio,
-            word_timestamps=word_timestamps
-        )
-
-        # Add useful metadata
-        result["word_count"] = len(result.get("text", "").split())
-
-        if result.get("segments"):
-            result["duration"] = result["segments"][-1]["end"]
-        else:
-            result["duration"] = 0
-
-        return result
-
-    # ---------------------------------------------------
-    # Save transcript JSON
-    # ---------------------------------------------------
     def save_transcript(self, result: dict, output_path: str):
-
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
-
-
-# ---------------------------------------------------
-# Singleton instance (for batch processing)
-# ---------------------------------------------------
-
-_transcriber_instance = None
-
-
-def get_transcriber(model_size: str = WHISPER_MODEL_SIZE):
-
-    global _transcriber_instance
-
-    if _transcriber_instance is None:
-        _transcriber_instance = Transcriber(model_size)
-
-    return _transcriber_instance

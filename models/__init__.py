@@ -1,4 +1,4 @@
-from .transcriber import Transcriber
+from .transcriber import FastTranscriber
 from .sentiment_analyzer import SentimentAnalyzer
 
-__all__ = ["Transcriber", "SentimentAnalyzer"]
+__all__ = ["FastTranscriber", "SentimentAnalyzer"]
